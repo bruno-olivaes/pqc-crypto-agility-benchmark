@@ -4,57 +4,64 @@
 [![Quantum Safe](https://img.shields.io/badge/Security-Quantum--Safe-green.svg)](https://csrc.nist.gov/projects/post-quantum-cryptography)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An open-source cryptographic audit and benchmarking framework evaluating the **transition from classical public-key cryptography (RSA, ECC) to the new Post-Quantum Cryptography standards (ML-KEM-768 / CRYSTALS-Kyber, NIST FIPS 203)** and **Hybrid KEM (ECDH + ML-KEM)**.
+An open-source cryptographic audit and benchmarking framework evaluating the **transition from classical public-key cryptography (RSA, ECC) to the finalized Post-Quantum Cryptography standards (ML-KEM-768 / CRYSTALS-Kyber, NIST FIPS 203)** and **Hybrid KEM (ECDH + ML-KEM)**.
+
+Backed by production C-extensions (`pqcrypto` and OpenSSL via `cryptography`), combining an analytical **RFC 8446 (TLS 1.3) handshake flight / TCP MSS & `initcwnd` model** with a live TCP socket MSS reception buffer test (`recv(1460)`).
 
 ---
 
-## 1. The Real-World Problem: The "Harvest Now, Decrypt Later" Threat
+## 1. The Real-World Engineering Problem
 
-Traditional asymmetric encryption protecting the global financial system (PIX, SWIFT, TLS 1.3, SSL) relies on the hardness of integer factorization (RSA) or the discrete logarithm on elliptic curves (ECC). A fault-tolerant quantum computer running **Shor's Algorithm** solves both in polynomial time $\mathcal{O}((\log N)^3)$, rendering current encryption obsolete.
+Traditional asymmetric encryption protecting the global financial system (PIX, SWIFT, TLS 1.3) relies on the hardness of integer factorization (RSA) or the discrete logarithm on elliptic curves (ECC). A fault-tolerant quantum computer running **Shor's Algorithm** solves both in polynomial time $\mathcal{O}((\log N)^3)$, rendering classical asymmetric cryptography vulnerable to "harvest now, decrypt later" attacks.
 
-To address this, the **National Institute of Standards and Technology (NIST)** officially finalized the first Post-Quantum Cryptography standards in August 2024:
-* **FIPS 203 (ML-KEM):** Module-Lattice-Based Key-Encapsulation Mechanism (formerly CRYSTALS-Kyber).
-* **FIPS 204 (ML-DSA):** Module-Lattice-Based Digital Signature Algorithm (formerly CRYSTALS-Dilithium).
+To address this, NIST finalized the primary PQC standards in August 2024:
+* **FIPS 203 (ML-KEM):** Module-Lattice-Based Key-Encapsulation Mechanism.
+* **FIPS 204 (ML-DSA):** Module-Lattice-Based Digital Signature Algorithm.
 
-### The Engineering Challenge: Wire Size & Network MTU
-While quantum-safe, lattice-based cryptography introduces significant payload expansion:
-* Classical ECDH P-256 uses a **65-byte** public key.
-* **ML-KEM-768** requires a **1,184-byte** public key and a **1,088-byte** ciphertext.
-* The total handshake payload (**2,272 bytes**) exceeds the standard Ethernet **Maximum Transmission Unit (MTU = 1,500 bytes)**, inducing TCP packet fragmentation and latency penalties in high-frequency trading and low-bandwidth connections.
+### Computational Speed vs. Wire Payload & TLS 1.3 Handshake Framing
+A common misconception is that lattice-based cryptography is computationally slower than classical RSA. As shown in our empirical benchmark:
+* **Computational Speed:** ML-KEM-768 key generation takes **~41 microseconds** ($\mu\mathrm{s}$), making it **~740x faster than RSA-2048 key generation (~30.5 ms)** and competitive with ECDH P-256 (~16.6 $\mu\mathrm{s}$).
+* **Network Wire Payload:** Classical ECDH P-256 public keys and ciphertexts require only **65 bytes** each (130 B total). In contrast, ML-KEM-768 requires a **1,184-byte public key** (`ClientHello` `KeyShare`) and a **1,088-byte ciphertext** (`ServerHello` `KeyShare`), totaling **2,272 bytes** (and **2,402 bytes** for Hybrid X25519/P-256 + ML-KEM-768).
+* **TCP MSS Segmentation vs. Congestion Window (`initcwnd`):**
+  * Over standard Ethernet (**MTU = 1,500 bytes**, IPv4/TCP **MSS = 1,460 bytes**), the combined KEM wire payload (2,272 B for ML-KEM-768; 2,402 B for Hybrid PQC) spans **2 TCP segments**, and a full Hybrid `ClientHello` (~269 B base + 1,249 B KeyShare = **1,518 B**) crosses the 1-MSS boundary into 2 TCP segments.
+  * *Methodological Note:* On OS loopback (`127.0.0.1`), the kernel loopback interface MTU is 65,535 B; our live socket audit (`audit_tcp_transport`) uses `recv(1460)` to emulate a 1,460-byte MSS reception buffer or middlebox frame limit, while `audit_tls13_handshake_framing` computes the exact RFC 8446 TLS 1.3 flight sizes and TCP segment counts.
+  * *Modern TCP Context (RFC 6928):* While multi-segment `ClientHello`/`ServerHello` flights fit comfortably inside the modern TCP initial congestion window (`initcwnd = 10` segments $\approx 14.6\text{ KB}$) without adding an extra round-trip time (RTT) on clean links, crossing the 1-MSS boundary increases head-of-line blocking sensitivity on lossy links and can trigger failures in legacy middleboxes/firewalls that enforce single-packet `ClientHello` inspection buffers.
 
 ---
 
-## 2. Empirical Benchmark Results (NIST FIPS 203 Audit)
+## 2. Audited Empirical Benchmark Results
 
-Benchmarked on modern hardware across 15 independent iterations per algorithm:
+Benchmarked on production hardware using compiled C-extensions (`pqcrypto` and OpenSSL `cryptography.hazmat`) across 100 independent iterations for fast schemes and 15 iterations for RSA:
 
-| Algorithm | Quantum-Safe? | Public Key Size | Ciphertext Size | Total Wire Size | KeyGen Latency | Encaps / Encrypt | Decaps / Decrypt | Network Risk |
+| Algorithm | Quantum-Safe? | Public Key | Ciphertext | Total KEM Wire | KeyGen | Encaps | Decaps | KEM Wire Segments (1460 B MSS) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RSA-2048** | **NO (Broken)** | 270 B | 256 B | 526 B | 48.54 ms | 0.22 ms | 0.95 ms | Low (Fits MTU) |
-| **RSA-4096** | **NO (Broken)** | 526 B | 512 B | 1,038 B | 777.83 ms | 0.20 ms | 9.95 ms | Low (Fits MTU) |
-| **ECDH P-256** | **NO (Broken)** | 65 B | 65 B | 130 B | 0.31 ms | 2.70 ms | 3.22 ms | Negligible |
-| **ML-KEM-768** | **YES (Immune)** | **1,184 B** | **1,088 B** | **2,272 B** | 41.44 ms | 20.16 ms | 4.85 ms | **Exceeds 1500 B MTU** |
-| **Hybrid PQC** | **YES (Immune)** | **1,249 B** | **1,153 B** | **2,402 B** | 2.50 ms | 3.19 ms | 0.95 ms | **Exceeds 1500 B MTU** |
+| **RSA-2048** | **NO (Broken)** | 270 B | 256 B | 526 B | 30.49 ms | 251.2 $\mu\mathrm{s}$ | 765.0 $\mu\mathrm{s}$ | **1 segment** (Fits single MSS) |
+| **RSA-4096** | **NO (Broken)** | 526 B | 512 B | 1,038 B | 337.86 ms | 127.2 $\mu\mathrm{s}$ | 3.76 ms | **1 segment** (Fits single MSS) |
+| **ECDH P-256** | **NO (Broken)** | 65 B | 65 B | 130 B | 16.6 $\mu\mathrm{s}$ | 90.3 $\mu\mathrm{s}$ | 49.0 $\mu\mathrm{s}$ | **1 segment** (Negligible wire) |
+| **ML-KEM-768** | **YES (Immune)** | **1,184 B** | **1,088 B** | **2,272 B** | **41.3 $\mu\mathrm{s}$** | **46.7 $\mu\mathrm{s}$** | **63.0 $\mu\mathrm{s}$** | **2 segments** (> 1460 B MSS) |
+| **Hybrid PQC** | **YES (Immune)** | **1,249 B** | **1,153 B** | **2,402 B** | **58.9 $\mu\mathrm{s}$** | **119.3 $\mu\mathrm{s}$** | **117.5 $\mu\mathrm{s}$** | **2 segments** (`ClientHello` > 1 MSS) |
 
 ---
 
-## 3. Visualizations
+## 3. Visual Dashboard
 
-The generated benchmark visualization (`benchmarks/fig_pqc_crypto_agility.png`) provides:
-1. **Wire Size Comparison (Log Scale):** Demonstrates key and ciphertext growth relative to the 1,500-byte MTU threshold.
-2. **Cryptographic Latency:** Compares KeyGen, Encapsulation, and Decapsulation runtimes.
-3. **Quantum Security & Network Risk Matrix:** Highlights algorithms that are both quantum-safe and identify infrastructure bottlenecks requiring jumbo frames or optimized TCP stacks.
+The benchmark suite generates a 3-panel figure (`benchmarks/fig_pqc_crypto_agility.png`):
+1. **Wire Size vs. MTU Threshold (Log Scale):** Shows exact public key and ciphertext byte sizes relative to the 1,500-byte Ethernet MTU.
+2. **KeyGen Latency (Log Scale, $\mu\mathrm{s}$):** Quantifies ML-KEM's ~740x computational advantage over RSA-2048.
+3. **TCP MSS Segment Count:** Compares 1,460-byte MSS segment counts across classical, PQC, and hybrid schemes.
 
 ---
 
-## 4. Quickstart Guide
+## 4. Quickstart & Testing
 
 ```bash
-# Clone the repository
-git clone https://github.com/bruno-olivaes/pqc-crypto-agility-benchmark.git
-cd pqc-crypto-agility-benchmark
+# Install dependencies (requires precompiled pqcrypto wheel or C compiler)
+pip install cryptography numpy matplotlib pytest pqcrypto
 
-# Run the complete Post-Quantum Cryptographic Audit
+# Run unit test suite
+pytest tests/
+
+# Run the master audit and regenerate benchmark figures
 python benchmarks/run_pqc_agility_benchmark.py
 ```
 
@@ -65,10 +72,19 @@ python benchmarks/run_pqc_agility_benchmark.py
 ```
 pqc-crypto-agility-benchmark/
 ├── src/
-│   ├── pqc_algorithms.py           # ML-KEM-768, RSA, ECDH, and Hybrid PQC implementations
+│   ├── pqc_algorithms.py           # Production C-backed ML-KEM-768, RSA, ECDH, Hybrid PQC + Toy Reference
+│   ├── network_socket_audit.py     # Analytical TLS 1.3 flight framing + TCP socket 1460-B MSS buffer audit
 │   └── __init__.py
 ├── benchmarks/
-│   ├── run_pqc_agility_benchmark.py # End-to-end audit and benchmarking suite
-│   └── fig_pqc_crypto_agility.png  # Generated 3-panel publication comparison figure
+│   ├── run_pqc_agility_benchmark.py # Master benchmark & plotting script
+│   └── fig_pqc_crypto_agility.png   # Audited 3-panel comparison figure
+├── tests/
+│   └── test_pqc_suite.py           # Pytest unit tests for all key exchanges, TLS 1.3 framing, and socket audits
 └── README.md
 ```
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
