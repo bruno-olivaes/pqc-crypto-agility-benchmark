@@ -38,3 +38,4 @@ Após a emissão do DOI pelo Zenodo, inclua o badge no início do `README.md`:
 ```markdown
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
 ```
+
