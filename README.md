@@ -1,5 +1,6 @@
 # pqc-crypto-agility-benchmark: Post-Quantum Cryptography & Crypto-Agility Audit Suite (NIST FIPS 203)
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24121695.svg)](https://doi.org/10.5281/zenodo.24121695)
 [![Standard: NIST FIPS 203](https://img.shields.io/badge/NIST-FIPS%20203%20(ML--KEM)-blue.svg)](https://csrc.nist.gov/pubs/fips/203/final)
 [![Paper PDF](https://img.shields.io/badge/Paper-PDF_Manuscript-red.svg)](manuscript/main.pdf)
 [![Quantum Safe](https://img.shields.io/badge/Security-Quantum--Safe-green.svg)](https://csrc.nist.gov/projects/post-quantum-cryptography)
